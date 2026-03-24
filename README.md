@@ -2,7 +2,7 @@
 
 A web UI and CLI for running Claude agents in parallel — batch tasks, review results, and follow up with agents, all from one place.
 
-<video src="demo.mp4" autoplay loop muted playsinline></video>
+<video src="https://github.com/user-attachments/assets/2a9df645-89e2-4414-9cf9-2657c8df60a4" autoplay loop muted playsinline></video>
 
 If you've ever needed to run the same Claude agent task across a dozen inputs and then review every result — you know the pain. Switching between terminal tabs, losing track of which session was which, scrolling through output trying to find the one that matters. And then a week later, trying to find that one session where the agent found something interesting? Forget it.
 
