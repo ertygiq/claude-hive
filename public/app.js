@@ -429,7 +429,11 @@ function findTask(id) {
 // --- Actions ---
 async function togglePause() {
   const endpoint = state.paused ? '/api/control/resume' : '/api/control/pause';
-  await fetch(endpoint, { method: 'POST' });
+  await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   poll();
 }
 
@@ -442,7 +446,11 @@ async function removeTask(id) {
 async function cancelTask(id) {
   if (!id) return;
   if (!await showConfirm('Cancel this task?')) return;
-  await fetch(`/api/tasks/${id}/cancel`, { method: 'POST' });
+  await fetch(`/api/tasks/${id}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   poll();
 }
 
@@ -450,13 +458,21 @@ async function cancelAllTasks() {
   const activeCount = (state.queue?.length || 0) + (state.workers?.length || 0);
   if (activeCount === 0) return;
   if (!await showConfirm('Cancel all queued and running tasks?')) return;
-  await fetch('/api/tasks/cancel_all', { method: 'POST' });
+  await fetch('/api/tasks/cancel_all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   poll();
 }
 
 async function retryTask(id) {
   if (!await showConfirm('Retry this task?')) return;
-  await fetch(`/api/tasks/${id}/retry`, { method: 'POST' });
+  await fetch(`/api/tasks/${id}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   poll();
 }
 
@@ -468,7 +484,11 @@ async function deleteResultTask(id) {
 }
 
 async function clearCompleted() {
-  await fetch('/api/completed/clear', { method: 'POST' });
+  await fetch('/api/completed/clear', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
   if (selectedTaskId) {
     const task = state.results.find(t => t.id === selectedTaskId);
     if (task) closeDetail();

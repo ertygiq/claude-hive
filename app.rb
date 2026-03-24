@@ -3,6 +3,7 @@
 require 'sinatra/base'
 require 'sinatra/json'
 require 'json'
+require 'uri'
 require_relative 'lib/pool_manager'
 
 class ClaudeHiveApp < Sinatra::Base
@@ -10,6 +11,9 @@ class ClaudeHiveApp < Sinatra::Base
   set :bind, '127.0.0.1'
   set :public_folder, File.join(__dir__, 'public')
   set :pool, PoolManager.new
+
+  JSON_METHODS = %w[POST PUT PATCH].freeze
+  UNSAFE_METHODS = %w[POST PUT PATCH DELETE].freeze
 
   configure do
     settings.pool.start
@@ -21,20 +25,51 @@ class ClaudeHiveApp < Sinatra::Base
   end
 
   before do
-    # CSRF + DNS rebinding protection. Validate the Host header against a
-    # configurable allowlist (default: localhost, 127.0.0.1). DNS rebinding
-    # can make evil.com resolve to 127.0.0.1, so we can't trust the Host
-    # header to be "localhost" — we must check it explicitly.
-    unless %w[GET HEAD OPTIONS].include?(request.request_method)
-      allowed = pool.config[:allowed_hosts] || %w[localhost 127.0.0.1]
-      host = request.host
-      halt 403, json(error: "Blocked: untrusted Host header '#{host}'") unless allowed.include?(host)
+    # Validate Host on every request to block DNS rebinding, and require a
+    # trusted browser origin for state-changing requests to block CSRF.
+    allowed = pool.config[:allowed_hosts] || %w[localhost 127.0.0.1]
+    host = request.host
+    halt 403, json(error: "Blocked: untrusted Host header '#{host}'") unless allowed.include?(host)
+
+    if UNSAFE_METHODS.include?(request.request_method)
+      halt 403, json(error: "Blocked: untrusted request origin") unless trusted_request_origin?(allowed)
+    end
+
+    if JSON_METHODS.include?(request.request_method)
+      unless request.media_type == 'application/json'
+        halt 415, json(error: "Content-Type must be application/json")
+      end
     end
   end
 
   helpers do
     def pool
       settings.pool
+    end
+
+    def trusted_request_origin?(allowed_hosts)
+      origin = request.env['HTTP_ORIGIN']
+      return origin_allowed?(origin, allowed_hosts) if origin && !origin.empty?
+
+      referer = request.referer
+      return origin_allowed?(referer, allowed_hosts) if referer && !referer.empty?
+
+      false
+    end
+
+    def origin_allowed?(value, allowed_hosts)
+      uri = URI.parse(value)
+      return false unless uri.host
+      return false unless %w[http https].include?(uri.scheme)
+
+      allowed_hosts.include?(uri.host) && same_effective_port?(uri)
+    rescue URI::InvalidURIError
+      false
+    end
+
+    def same_effective_port?(uri)
+      uri_port = uri.port || (uri.scheme == 'https' ? 443 : 80)
+      uri_port == request.port
     end
 
     def parse_body

@@ -243,12 +243,10 @@ class ClaudeHiveCLI
     request(Net::HTTP::Get.new(path))
   end
 
-  def post(path, body = nil)
+  def post(path, body = {})
     req = Net::HTTP::Post.new(path)
-    if body
-      req['Content-Type'] = 'application/json'
-      req.body = JSON.generate(body)
-    end
+    req['Content-Type'] = 'application/json'
+    req.body = JSON.generate(body)
     request(req)
   end
 
