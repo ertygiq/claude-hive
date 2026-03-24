@@ -1,0 +1,8 @@
+{
+  "max_parallel": 4,
+  "agent_cmd": "claude",
+  "agent_args": [],
+  "work_dir": "/tmp/claudehive",
+  "session_viewer_url": "http://localhost:3000",
+  "allowed_hosts": ["localhost", "127.0.0.1"]
+}

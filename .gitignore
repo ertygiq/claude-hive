@@ -1,0 +1,16 @@
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini
+.bundle/
+.claude/
+
+# Bundler-installed gems
+vendor/
+
+# User config (defaults in config.json.example)
+config.json
+
+# App runtime state
+data/
+*.log

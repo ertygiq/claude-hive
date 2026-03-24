@@ -1,0 +1,379 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'net/http'
+require 'json'
+require 'uri'
+require 'time'
+
+class ClaudeHiveCLI
+  SPINNER = %w[| / - \\]
+
+  def initialize
+    config_path = File.join(Dir.home, '.config', 'claudehive.json')
+    if File.exist?(config_path)
+      cfg = JSON.parse(File.read(config_path))
+      @base_url = cfg['host']
+    end
+    @base_url ||= 'http://localhost:4567'
+    @uri = URI.parse(@base_url)
+  end
+
+  def run(argv)
+    cmd = argv.shift
+    case cmd
+    when 'status'    then cmd_status
+    when 'templates' then cmd_templates
+    when 'start'     then cmd_start(argv)
+    when 'queue'     then cmd_queue
+    when 'results'   then cmd_results
+    when 'show'      then cmd_show(argv)
+    when 'wait'      then cmd_wait(argv)
+    when 'followup'  then cmd_followup(argv)
+    when 'cancel'    then cmd_cancel(argv)
+    when 'retry'     then cmd_retry(argv)
+    when 'help', '-h', '--help', nil then usage
+    else die "Unknown command: #{cmd}. Run 'claudehive help' for usage."
+    end
+  end
+
+  private
+
+  def usage
+    puts <<~TEXT
+      CLI for ClaudeHive — parallel task runner for Claude agents.
+
+      Usage: claudehive <command> [args]
+
+      Commands:
+        status                      Show queue/running/completed counts
+        templates                   List prompt templates
+        start <name> <input>        Start task from template (by name)
+        start -p "prompt"           Start task with raw prompt
+        queue                       List queued and running tasks
+        results                     List completed tasks
+        show <id>                   Show task output (agent result only)
+        show <id> --review          Show review sections only
+        show <id> --followup        Show follow-up messages (sent after completion)
+        show <id> --full            Show output + reviews + follow-ups
+        wait <id>                   Wait for task to complete
+        followup <id> "message"          Send a follow-up message to the agent
+        followup <id> "message" --wait   Send and wait for the agent's reply
+        cancel <id>                 Cancel a task
+        retry <id>                  Retry a task
+
+      Task IDs can be shortened to a unique prefix (e.g. "4f63e134" instead of full UUID).
+      Server: http://localhost:4567 (override in ~/.config/claudehive.json)
+    TEXT
+  end
+
+  # --- Commands ---
+
+  def cmd_status
+    s = get('/api/state')
+    stats = s['stats']
+    puts "Paused:    #{s['paused'] ? 'yes' : 'no'}"
+    puts "Queued:    #{stats['queued']}"
+    puts "Running:   #{stats['running']}"
+    puts "Completed: #{stats['completed']}"
+    puts "Failed:    #{stats['failed']}"
+    puts "Cancelled: #{stats['cancelled']}"
+  end
+
+  def cmd_templates
+    cfg = get('/api/config')
+    templates = cfg['templates'] || []
+    if templates.empty?
+      puts 'No templates configured.'
+      return
+    end
+    templates.each do |t|
+      puts "\e[1m#{t['name']}\e[0m"
+      t['template'].lines.each { |line| puts "  #{line}" }
+      puts
+    end
+  end
+
+  def cmd_start(args)
+    if args.include?('-p')
+      idx = args.index('-p')
+      prompt = args[idx + 1]
+      die 'Missing prompt after -p' unless prompt
+      res = post('/api/tasks', { prompt: prompt, label: prompt[0..60] })
+      puts res['id']
+    else
+      die 'Usage: claudehive start <template> <input>' if args.size < 2
+      template_name = args.shift
+      input = args.join(' ')
+      template = match_template(template_name)
+      res = post('/api/tasks/batch', { template_id: template['id'], inputs: [input] })
+      puts res['ids'].first
+    end
+  end
+
+  def cmd_queue
+    s = get('/api/state')
+    tasks = (s['queue'] || []) + (s['workers'] || [])
+    if tasks.empty?
+      puts 'No queued or running tasks.'
+      return
+    end
+    tasks.each do |t|
+      elapsed = ''
+      if t['started_at']
+        secs = (Time.now - Time.parse(t['started_at'])).to_i
+        elapsed = "  #{format_duration(secs)}"
+      end
+      puts "#{short_id(t['id'])}  #{pad(t['status'], 10)}  #{truncate(task_display_label(t), 50)}#{elapsed}"
+    end
+  end
+
+  def cmd_results
+    s = get('/api/state')
+    tasks = (s['results'] || []).reverse
+    if tasks.empty?
+      puts 'No results.'
+      return
+    end
+    tasks.each do |t|
+      ts = t['completed_at'] || t['created_at']
+      time = ts ? format_time(ts) : ''
+      summary = t['summary'] ? "  #{truncate(t['summary'], 60)}" : ''
+      puts "#{short_id(t['id'])}  #{pad(t['status'], 10)}  #{time}  #{truncate(task_display_label(t), 40)}#{summary}"
+    end
+  end
+
+  def cmd_show(args)
+    mode = :output
+    args.reject! do |a|
+      case a
+      when '--review' then mode = :review; true
+      when '--followup' then mode = :followup; true
+      when '--full'   then mode = :full; true
+      else false
+      end
+    end
+    die 'Usage: claudehive show <id> [--review|--full]' if args.empty?
+    id = resolve_task_id(args.first)
+    t = get("/api/tasks/#{id}")
+
+    finished = %w[completed failed cancelled].include?(t['status'])
+    $stderr.puts "#{task_display_label(t)}  [#{t['status']}]"
+    $stderr.puts "output so far:" unless finished
+    $stderr.puts
+
+    case mode
+    when :output
+      puts t['output'] || '(no output)'
+    when :review
+      print_review(t)
+    when :followup
+      print_followup(t)
+    when :full
+      puts t['output'] || '(no output)'
+      if t['review_output'] || (t['review_entries'] && !t['review_entries'].empty?)
+        puts "\n#{'=' * 40}\nREVIEW\n#{'=' * 40}\n"
+        print_review(t)
+      end
+      if t['chat_history'] && !t['chat_history'].empty?
+        puts "\n#{'=' * 40}\nFOLLOW-UP\n#{'=' * 40}\n"
+        print_followup(t)
+      end
+    end
+  end
+
+  def cmd_wait(args)
+    die 'Usage: claudehive wait <id>' if args.empty?
+    id = resolve_task_id(args.first)
+    t = get("/api/tasks/#{id}")
+    label = t['label'] || short_id(id)
+
+    trap('INT') { $stdout.print "\r\e[K"; exit 130 }
+
+    until %w[completed failed cancelled].include?(t['status'])
+      sleep 2
+      t = get("/api/tasks/#{id}")
+    end
+    exit(t['status'] == 'completed' ? 0 : 1)
+  end
+
+  def cmd_followup(args)
+    wait = args.delete('--wait')
+    die 'Usage: claudehive followup <id> "message" [--wait]' if args.size < 2
+    id = resolve_task_id(args.shift)
+    message = args.join(' ')
+    t = get("/api/tasks/#{id}")
+    chat_count_before = (t['chat_history'] || []).size
+    post("/api/tasks/#{id}/chat", { message: message })
+
+    unless wait
+      puts "Message sent. Response will appear in: claudehive show #{short_id(id)} --followup"
+      return
+    end
+
+    # Wait for the assistant reply to appear
+    loop do
+      sleep 2
+      t = get("/api/tasks/#{id}")
+      history = t['chat_history'] || []
+      if history.size > chat_count_before + 1
+        puts history.last['content']
+        break
+      end
+    end
+  end
+
+  def cmd_cancel(args)
+    die 'Usage: claudehive cancel <id>' if args.empty?
+    id = resolve_task_id(args.first)
+    post("/api/tasks/#{id}/cancel")
+    puts "Cancelled #{short_id(id)}"
+  end
+
+  def cmd_retry(args)
+    die 'Usage: claudehive retry <id>' if args.empty?
+    id = resolve_task_id(args.first)
+    post("/api/tasks/#{id}/retry")
+    puts "Retried #{short_id(id)}"
+  end
+
+  # --- HTTP ---
+
+  def get(path)
+    request(Net::HTTP::Get.new(path))
+  end
+
+  def post(path, body = nil)
+    req = Net::HTTP::Post.new(path)
+    if body
+      req['Content-Type'] = 'application/json'
+      req.body = JSON.generate(body)
+    end
+    request(req)
+  end
+
+  def delete_req(path)
+    request(Net::HTTP::Delete.new(path))
+  end
+
+  def request(req)
+    http = Net::HTTP.new(@uri.host, @uri.port)
+    http.open_timeout = 5
+    http.read_timeout = 10
+    res = http.request(req)
+    unless res.is_a?(Net::HTTPSuccess)
+      msg = begin JSON.parse(res.body)['error'] rescue res.body end
+      die "API error (#{res.code}): #{msg}"
+    end
+    JSON.parse(res.body)
+  rescue Errno::ECONNREFUSED
+    die "Cannot connect to ClaudeHive at #{@base_url}. Is the server running?"
+  end
+
+  # --- Resolution ---
+
+  def resolve_task_id(short)
+    s = get('/api/state')
+    all = (s['queue'] || []) + (s['workers'] || []) + (s['results'] || [])
+    matches = all.select { |t| t['id'].start_with?(short) }
+    case matches.size
+    when 0 then die "No task matching '#{short}'"
+    when 1 then matches.first['id']
+    else die "Ambiguous ID '#{short}', matches:\n#{matches.map { |t| "  #{short_id(t['id'])}  #{t['label']}" }.join("\n")}"
+    end
+  end
+
+  def template_names
+    @template_names ||= begin
+      cfg = get('/api/config')
+      (cfg['templates'] || []).to_h { |t| [t['id'], t['name']] }
+    end
+  end
+
+  def task_display_label(t)
+    tmpl = t['template_id'] ? template_names[t['template_id']] : nil
+    tmpl ? "[#{tmpl}] #{t['label']}" : t['label']
+  end
+
+  def match_template(name)
+    cfg = get('/api/config')
+    templates = cfg['templates'] || []
+    matches = templates.select { |t| t['name'].downcase.include?(name.downcase) }
+    case matches.size
+    when 0 then die "No template matching '#{name}'. Available:\n#{templates.map { |t| "  #{t['name']}" }.join("\n")}"
+    when 1 then matches.first
+    else die "Ambiguous template '#{name}', matches:\n#{matches.map { |t| "  #{t['name']}" }.join("\n")}"
+    end
+  end
+
+  # --- Formatting ---
+
+  def print_followup(t)
+    history = t['chat_history'] || []
+    if history.empty?
+      puts '(no follow-up messages)'
+      return
+    end
+    history.each do |m|
+      puts "[#{m['role']}] #{m['content']}"
+      puts
+    end
+  end
+
+  def print_review(t)
+    entries = t['review_entries'] || []
+    if entries.any?
+      entries.each do |e|
+        puts "--- #{e['prompt']} ---"
+        puts e['output']
+        puts
+      end
+    elsif t['review_output']
+      puts t['review_output']
+    else
+      puts '(no review)'
+    end
+  end
+
+  def short_id(id)
+    id[0..7]
+  end
+
+  def pad(str, len)
+    str.to_s.ljust(len)
+  end
+
+  def format_time(iso)
+    t = Time.parse(iso)
+    now = Time.now
+    if t.year == now.year && t.month == now.month && t.day == now.day
+      t.strftime('%H:%M')
+    elsif t.year == now.year
+      t.strftime('%b %d %H:%M')
+    else
+      t.strftime('%Y-%m-%d %H:%M')
+    end
+  end
+
+  def truncate(str, len)
+    return '' unless str
+    str.length > len ? "#{str[0...len - 3]}..." : str
+  end
+
+  def format_duration(seconds)
+    if seconds < 60
+      "#{seconds}s"
+    elsif seconds < 3600
+      "#{seconds / 60}m #{seconds % 60}s"
+    else
+      "#{seconds / 3600}h #{(seconds % 3600) / 60}m"
+    end
+  end
+
+  def die(msg)
+    $stderr.puts msg
+    exit 1
+  end
+end
+
+ClaudeHiveCLI.new.run(ARGV)

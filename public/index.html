@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClaudeHive</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+</head>
+<body>
+
+<header>
+  <h1>ClaudeHive</h1>
+  <div class="stats-bar" id="stats-bar">
+    <span class="stat"><span class="dot dot-queued"></span> <span id="stat-queued">0</span> queued</span>
+    <span class="stat"><span class="dot dot-running"></span> <span id="stat-running">0</span> running</span>
+    <span class="stat"><span class="dot dot-completed"></span> <span id="stat-completed">0</span> done</span>
+    <span class="stat"><span class="dot dot-failed"></span> <span id="stat-failed">0</span> failed</span>
+  </div>
+  <div class="header-controls">
+    <button id="pause-btn" onclick="togglePause()">⏸ Pause</button>
+    <button onclick="openAddTask()">+ Add Task</button>
+    <button onclick="openBatchAdd()">+ Batch</button>
+    <button onclick="openSettings()">⚙ Settings</button>
+  </div>
+</header>
+
+<div class="paused-banner" id="paused-banner">Pipeline paused — no new tasks will be started</div>
+
+<main>
+  <!-- Queue -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Queue <span class="count" id="queue-count">0</span></h2>
+    </div>
+    <div class="task-list" id="queue-list"></div>
+  </section>
+
+  <!-- Workers -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Workers <span class="count" id="worker-count">0 / 4</span></h2>
+      <button class="small" onclick="cancelAllTasks()">Cancel all</button>
+    </div>
+    <div class="task-list" id="workers-list"></div>
+  </section>
+
+  <!-- Results -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Results <span class="count" id="results-count">0</span></h2>
+      <button class="small" onclick="clearCompleted()">Clear all</button>
+    </div>
+    <div class="task-list" id="results-list"></div>
+  </section>
+</main>
+
+<!-- Detail Panel -->
+<div class="resize-handle" id="resize-handle"></div>
+<div class="detail-panel hidden" id="detail-panel">
+  <div class="detail-header">
+    <div style="display:flex;align-items:center">
+      <h3 id="detail-title">—</h3>
+      <div class="detail-tabs" id="detail-tabs">
+        <button class="detail-tab active" onclick="switchDetailTab('output')">Output</button>
+        <button class="detail-tab" onclick="switchDetailTab('prompt')">Prompt</button>
+      </div>
+      <button class="small" id="detail-session-btn" onclick="openSession()" style="margin-left:8px">Session</button>
+      <button class="small" id="copy-session-id-btn" onclick="copySessionId()" style="margin-left:4px" title="Copy session ID">ID</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <span class="status-badge" id="detail-status"></span>
+      <button class="small" onclick="retryTask(selectedTaskId)">↻ Retry</button>
+      <button class="small danger" id="detail-cancel-btn" onclick="cancelTask(selectedTaskId)" style="display:none">Cancel</button>
+      <button class="icon-btn" onclick="closeDetail()">✕</button>
+    </div>
+  </div>
+  <div class="detail-body" id="detail-body"></div>
+  <div class="chat-input-area" id="chat-area" style="display:none">
+    <textarea id="chat-input" placeholder="Send a message to this session..." rows="1"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+    <button class="primary" onclick="sendChat()">Send</button>
+  </div>
+</div>
+
+<!-- Add Task Modal -->
+<div class="modal-overlay hidden" id="add-task-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Add Task</h3>
+      <button class="icon-btn" onclick="closeModal('add-task-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Label (optional)</label>
+        <input type="text" id="add-label" placeholder="Short identifier">
+      </div>
+      <div class="form-group">
+        <label>Prompt</label>
+        <textarea class="code" id="add-prompt" rows="8" placeholder="Enter the full prompt..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeModal('add-task-modal')">Cancel</button>
+      <button class="primary" onclick="submitAddTask()">Add Task</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch Add Modal -->
+<div class="modal-overlay hidden" id="batch-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Batch Add Tasks</h3>
+      <button class="icon-btn" onclick="closeModal('batch-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Template</label>
+        <select id="batch-template"></select>
+      </div>
+      <div class="form-group">
+        <label>Inputs (one per line)</label>
+        <textarea class="code" id="batch-inputs" rows="8" placeholder="Caching strategies&#10;CAP theorem&#10;event-driven systems"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeModal('batch-modal')">Cancel</button>
+      <button class="primary" onclick="submitBatch()">Add All</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay hidden" id="settings-modal">
+  <div class="modal" style="width:640px">
+    <div class="modal-header">
+      <h3>Settings</h3>
+      <button class="icon-btn" onclick="closeModal('settings-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Max Parallel Workers</label>
+          <input type="number" id="cfg-max-parallel" min="1" max="50" value="4">
+        </div>
+        <div class="form-group">
+          <label>Agent Command</label>
+          <input type="text" id="cfg-agent-cmd" placeholder="claude">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Agent Args (space-separated)</label>
+        <input type="text" id="cfg-agent-args" placeholder="">
+      </div>
+      <div class="form-group">
+        <label>Working Directory</label>
+        <input type="text" id="cfg-work-dir">
+      </div>
+      <div class="form-group">
+        <label>Session Viewer URL</label>
+        <input type="text" id="cfg-session-viewer-url" placeholder="http://localhost:3000">
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+      <h4 style="margin-bottom:12px">Templates</h4>
+      <div id="templates-list"></div>
+      <button class="small" onclick="addTemplateForm()" style="margin-top:8px">+ Add Template</button>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+      <h4 style="margin-bottom:12px">Review Sections</h4>
+      <div id="review-sections-list"></div>
+      <div class="form-group" style="margin-top:8px">
+        <input type="text" id="new-review-section-name" placeholder="Section name">
+        <textarea class="code" id="new-review-section-prompt" rows="3" placeholder="Enter review prompt..."></textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button class="small" id="review-section-save-btn" onclick="saveReviewSection()">+ Add Review Section</button>
+          <button class="small" id="review-section-cancel-btn" onclick="cancelReviewSectionEdit()" style="display:none">Cancel Edit</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeModal('settings-modal')">Cancel</button>
+      <button class="primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Template Form Modal -->
+<div class="modal-overlay hidden" id="template-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="template-modal-title">Add Template</h3>
+      <button class="icon-btn" onclick="closeModal('template-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Template Name</label>
+        <input type="text" id="tmpl-name" placeholder="e.g., explain-concept">
+      </div>
+      <div class="form-group">
+        <label>Template (use %{input} for the variable)</label>
+        <textarea class="code" id="tmpl-body" rows="8" placeholder="Explain %{input} in simple terms.&#10;&#10;Include:&#10;- What it is&#10;- Why it matters&#10;- A practical example"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Working Directory (optional, overrides global)</label>
+        <input type="text" id="tmpl-work-dir" placeholder="Leave empty to use global setting">
+      </div>
+      <div class="form-group">
+        <label>Color</label>
+        <div id="tmpl-color-picker" class="color-picker"></div>
+      </div>
+      <div class="form-group">
+        <label>Attached Review Sections</label>
+        <div id="tmpl-review-sections"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button onclick="closeModal('template-modal')">Cancel</button>
+      <button class="primary" onclick="saveTemplate()">Save Template</button>
+    </div>
+  </div>
+</div>
+
+<!-- Session Fullscreen Overlay -->
+<div class="session-overlay hidden" id="session-overlay">
+  <button class="session-close-btn" onclick="closeSession()">✕</button>
+  <div id="session-frame-host" class="session-frame-host"></div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay hidden" id="confirm-modal">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <h3 id="confirm-title">Confirm</h3>
+      <button class="icon-btn" onclick="resolveConfirm(false)">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirm-message" style="font-size:14px;line-height:1.5"></p>
+    </div>
+    <div class="modal-footer">
+      <button onclick="resolveConfirm(false)">No</button>
+      <button class="primary danger" onclick="resolveConfirm(true)">Yes</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
