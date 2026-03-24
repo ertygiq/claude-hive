@@ -88,7 +88,7 @@ claudehive retry <id>                  # retry a task
 
 Task IDs can be shortened to a unique prefix (e.g. `4f63e134` instead of the full UUID).
 
-Override the server address in `~/.config/claudehive.json`:
+By default the CLI connects to `http://localhost:4567`. If you run the server on a different host or port, override it in `~/.config/claudehive.json`:
 
 ```json
 {"host": "http://localhost:4567"}
