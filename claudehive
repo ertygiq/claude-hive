@@ -255,6 +255,7 @@ class ClaudeHiveCLI
   end
 
   def request(req)
+    req['Origin'] = @base_url
     http = Net::HTTP.new(@uri.host, @uri.port)
     http.open_timeout = 5
     http.read_timeout = 10
